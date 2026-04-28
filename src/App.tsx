@@ -37,12 +37,13 @@ interface Cell {
 const DIFFICULTY_CONFIG = {
   EASY: { 
     label: 'Easy', 
-    density: 0.10, 
+    density: 0.06, 
     multiplier: 1, 
-    minDistance: 4,
-    color: 'cyan',
-    glow: 'rgba(34, 211, 238, 0.15)',
-    accent: '#22d3ee',
+    minDistance: 3,
+    color: 'sky',
+    glow: 'rgba(56, 189, 248, 0.15)',
+    accent: '#38bdf8',
+    secondary: '#0ea5e9',
     pulse: '2s'
   },
   MEDIUM: { 
@@ -53,6 +54,7 @@ const DIFFICULTY_CONFIG = {
     color: 'emerald',
     glow: 'rgba(16, 185, 129, 0.15)',
     accent: '#10b981',
+    secondary: '#059669',
     pulse: '1.5s'
   },
   HARD: { 
@@ -63,8 +65,22 @@ const DIFFICULTY_CONFIG = {
     color: 'fuchsia',
     glow: 'rgba(192, 38, 211, 0.2)',
     accent: '#c026d3',
+    secondary: '#9333ea',
     pulse: '1s'
   },
+};
+
+const getInitialInventory = (difficulty: Difficulty) => {
+  switch (difficulty) {
+    case 'EASY':
+      return { UP: 8, DOWN: 8, LEFT: 8, RIGHT: 8 };
+    case 'MEDIUM':
+      return { UP: 3, DOWN: 4, LEFT: 2, RIGHT: 5 };
+    case 'HARD':
+      return { UP: 2, DOWN: 2, LEFT: 1, RIGHT: 3 };
+    default:
+      return { UP: 3, DOWN: 4, LEFT: 2, RIGHT: 5 };
+  }
 };
 
 // --- Utils ---
@@ -206,6 +222,54 @@ const calculatePath = (grid: Cell[][], start: { x: number, y: number }, end: { x
 
 // --- Components ---
 
+const AmbientBackground = ({ color, secondary }: { color: string, secondary: string }) => {
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
+      {/* Primary Glow */}
+      <motion.div 
+        animate={{ 
+          scale: [1, 1.2, 1],
+          x: [0, 100, 0],
+          y: [0, -50, 0]
+        }}
+        transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+        className="absolute top-[-10%] left-[-10%] w-[60%] h-[60%] rounded-full opacity-[0.03] blur-[120px]"
+        style={{ backgroundColor: color }}
+      />
+      
+      {/* Secondary Flare */}
+      <motion.div 
+        animate={{ 
+          scale: [1, 1.3, 1],
+          x: [0, -150, 0],
+          y: [0, 80, 0]
+        }}
+        transition={{ duration: 25, repeat: Infinity, ease: "linear" }}
+        className="absolute bottom-[-15%] right-[-10%] w-[70%] h-[70%] rounded-full opacity-[0.02] blur-[120px]"
+        style={{ backgroundColor: secondary }}
+      />
+
+      {/* Floating Vertical Data Stream Lines */}
+      <div className="absolute inset-0 opacity-[0.05]">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <motion.div 
+            key={i}
+            initial={{ y: -100, x: `${i * 15}%` }}
+            animate={{ y: ['0%', '100%'] }}
+            transition={{ 
+              duration: 15 + i * 5, 
+              repeat: Infinity, 
+              ease: "linear",
+              delay: i * 2
+            }}
+            className="absolute top-0 w-[1px] h-20 bg-gradient-to-b from-transparent via-white to-transparent"
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>('MEDIUM');
   const [nodes, setNodes] = useState(() => generatePositions('MEDIUM'));
@@ -218,12 +282,7 @@ export default function App() {
   const [score, setScore] = useState(0);
   const [scoreBreakdown, setScoreBreakdown] = useState({ base: 0, bonus: 0, time: 0, penalty: 0 });
   const [rank, setRank] = useState<string>('');
-  const [inventory, setInventory] = useState<{ [key in 'UP' | 'DOWN' | 'LEFT' | 'RIGHT']: number }>({
-    UP: 2,
-    DOWN: 3,
-    LEFT: 1,
-    RIGHT: 4
-  });
+  const [inventory, setInventory] = useState<{ [key in 'UP' | 'DOWN' | 'LEFT' | 'RIGHT']: number }>(() => getInitialInventory('MEDIUM'));
   const [lastPlaced, setLastPlaced] = useState<{ x: number, y: number, time: number } | null>(null);
   const [isCopied, setIsCopied] = useState(false);
   const [hintCell, setHintCell] = useState<{ x: number, y: number } | null>(null);
@@ -284,12 +343,7 @@ export default function App() {
     setDifficulty(newDifficulty);
     setNodes(newNodes);
     setGrid(newGrid);
-    setInventory({
-      UP: 2,
-      DOWN: 3,
-      LEFT: 1,
-      RIGHT: 4
-    });
+    setInventory(getInitialInventory(newDifficulty));
     setMoveCount(0);
     setUndoCount(0);
     setGameState('IDLE');
@@ -386,12 +440,7 @@ export default function App() {
 
   const clearGrid = () => {
     setGrid(createEmptyGrid(difficulty, start, end));
-    setInventory({
-      UP: 2,
-      DOWN: 3,
-      LEFT: 1,
-      RIGHT: 4
-    });
+    setInventory(getInitialInventory(difficulty));
     setMoveCount(0);
     setUndoCount(0);
     setGameState('IDLE');
@@ -408,18 +457,67 @@ export default function App() {
   const provideHint = () => {
     if (gameState !== 'IDLE') return;
     
-    // BFS to find shortest path considering obstacles
-    const queue: { x: number, y: number, path: {x: number, y: number}[] }[] = [{ ...start, path: [] }];
+    // 1. Trace the current path from start to find where it "breaks"
+    let currentX = start.x;
+    let currentY = start.y;
+    const playerVisited = new Set<string>();
+    
+    while (true) {
+      const key = `${currentX},${currentY}`;
+      if (playerVisited.has(key)) break; // Loop
+      playerVisited.add(key);
+      
+      const cell = grid[currentY][currentX];
+      if (cell.isEnd) {
+        // Path is already complete? Suggest a random empty cell or just return
+        return;
+      }
+
+      let dir = cell.direction;
+      if (cell.isStart && !dir) {
+        if (end.x > start.x) dir = 'RIGHT';
+        else if (end.x < start.x) dir = 'LEFT';
+        else if (end.y > start.y) dir = 'DOWN';
+        else dir = 'UP';
+      }
+
+      if (!dir) break;
+
+      let nextX = currentX;
+      let nextY = currentY;
+      switch (dir) {
+        case 'UP': nextY--; break;
+        case 'DOWN': nextY++; break;
+        case 'LEFT': nextX--; break;
+        case 'RIGHT': nextX++; break;
+      }
+
+      if (nextX < 0 || nextX >= GRID_SIZE || nextY < 0 || nextY >= GRID_SIZE || grid[nextY][nextX].isObstacle) break;
+      
+      currentX = nextX;
+      currentY = nextY;
+    }
+
+    // 2. Perform BFS from the "currentX/currentY" break point to find the next move
+    const queue: { x: number, y: number, path: {x: number, y: number}[] }[] = [{ x: currentX, y: currentY, path: [] }];
     const visited = new Set<string>();
-    visited.add(`${start.x},${start.y}`);
+    visited.add(`${currentX},${currentY}`);
 
     while (queue.length > 0) {
       const { x, y, path } = queue.shift()!;
+      
       if (x === end.x && y === end.y) {
         if (path.length > 0) {
-          // Find the first empty cell or cell that needs to be changed in the suggested path
+          // Highlight the cell that needs to be interacted with
           setHintCell(path[0]);
           setTimeout(() => setHintCell(null), 3000);
+        } else {
+          // If break point is the end (already handled) or stagnant
+          // we might want to suggest the current cell if it's not start/end
+          if (!grid[currentY][currentX].isStart && !grid[currentY][currentX].isEnd) {
+            setHintCell({ x: currentX, y: currentY });
+            setTimeout(() => setHintCell(null), 3000);
+          }
         }
         return;
       }
@@ -612,12 +710,10 @@ Uplink Verified // Signal Strength 100%
 
   return (
     <div className="min-h-screen bg-[#050508] text-slate-400 flex overflow-hidden font-sans selection:bg-cyan-500/30">
-      {/* Refined Background Elements */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-cyan-900/10 rounded-full blur-[160px]" />
-        <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-cyan-900/10 rounded-full blur-[160px]" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full opacity-[0.03] bg-[radial-gradient(#ffffff_1px,transparent_1px)] [background-size:32px_32px]" />
-      </div>
+      <AmbientBackground 
+        color={DIFFICULTY_CONFIG[difficulty].accent} 
+        secondary={DIFFICULTY_CONFIG[difficulty].secondary} 
+      />
 
       {/* Sidebar - Architectural Rail */}
       <aside 
@@ -639,7 +735,7 @@ Uplink Verified // Signal Strength 100%
               }}
             />
             <h1 className="text-2xl font-black tracking-tighter text-white uppercase font-sans">
-              NEURO<span className="text-cyan-400">ROUTE</span>
+              NEURO<span style={{ color: DIFFICULTY_CONFIG[difficulty].accent }}>ROUTE</span>
             </h1>
           </div>
           <p className="text-[10px] text-slate-500 font-mono uppercase tracking-[0.3em] leading-none ml-5">V.042 // SYSTEM.ACTIVE</p>
@@ -713,27 +809,27 @@ Uplink Verified // Signal Strength 100%
               </span>
             </div>
 
-            <div className="pt-6 border-t border-white/5 space-y-5">
+            <div className="pt-6 border-t border-white/5 space-y-6">
               <div className="flex justify-between items-end">
-                <h3 className="text-[11px] font-black uppercase text-slate-500 tracking-[0.4em]">Routing Assets</h3>
+                <h3 className="text-[13px] font-black uppercase text-slate-500 tracking-[0.4em]">Routing Assets</h3>
                 <button 
                   onClick={provideHint}
-                  className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 hover:text-white transition-colors flex items-center gap-2 group"
+                  className="text-[11px] font-bold uppercase tracking-widest text-cyan-400 hover:text-white transition-colors flex items-center gap-2 group"
                 >
-                  <Zap className="w-3 h-3 group-hover:animate-pulse" />
+                  <Zap className="w-3.5 h-3.5 group-hover:animate-pulse" />
                   Neural Assist
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 {(['UP', 'RIGHT', 'DOWN', 'LEFT'] as const).map(dir => (
-                  <div key={dir} className={`glass p-4 rounded-xl flex items-center justify-between border-white/5 transition-all ${inventory[dir] === 0 ? 'opacity-40' : 'hover:border-cyan-500/30'}`}>
-                    <span className="text-sm font-bold text-white">
+                  <div key={dir} className={`glass p-5 rounded-2xl flex items-center justify-between border-white/5 transition-all ${inventory[dir] === 0 ? 'opacity-40' : 'hover:border-cyan-500/30'}`}>
+                    <span className="text-lg font-black text-white">
                       {dir === 'UP' && '↑'}
                       {dir === 'DOWN' && '↓'}
                       {dir === 'LEFT' && '←'}
                       {dir === 'RIGHT' && '→'}
                     </span>
-                    <span className={`font-mono text-lg ${inventory[dir] === 0 ? 'text-red-400' : 'text-cyan-400 font-black'}`}>
+                    <span className={`font-mono text-2xl ${inventory[dir] === 0 ? 'text-red-400' : 'text-cyan-400 font-black'}`}>
                       {inventory[dir]}
                     </span>
                   </div>
@@ -924,7 +1020,7 @@ Uplink Verified // Signal Strength 100%
                       ${cell.isStart ? 'shadow-[inset_0_0_20px_rgba(34,211,238,0.1)]' : ''}
                       ${cell.isEnd ? 'shadow-[inset_0_0_20px_rgba(255,0,255,0.1)]' : ''}
                       ${hoveredCell?.x === x && hoveredCell?.y === y ? 'z-10 ring-1 ring-white/10 bg-white/[0.05]' : ''}
-                      ${selectedCell?.x === x && selectedCell?.y === y ? 'z-20 ring-2 ring-cyan-400 bg-cyan-400/5 shadow-[0_0_30px_rgba(34,211,238,0.2)]' : ''}
+                      ${selectedCell?.x === x && selectedCell?.y === y ? 'z-20 ring-4 ring-cyan-400 bg-cyan-400/10 shadow-[0_0_40px_rgba(34,211,238,0.3)] scale-[1.02]' : ''}
                       ${hintCell?.x === x && hintCell?.y === y ? 'z-30 ring-2 ring-yellow-400/50 bg-yellow-400/10 shadow-[0_0_20px_rgba(250,204,21,0.3)] animate-pulse' : ''}
                     `}
                   >
