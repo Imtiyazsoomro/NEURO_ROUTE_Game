@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { playSound } from './lib/sounds';
 import { 
   RotateCcw, 
   Trash2, 
@@ -356,6 +357,7 @@ export default function App() {
   };
 
   const handleCellClick = (x: number, y: number) => {
+    playSound('click');
     if (isRunning || grid[y][x].isObstacle || grid[y][x].isStart || grid[y][x].isEnd) {
       setSelectedCell(null);
       return;
@@ -401,6 +403,7 @@ export default function App() {
   };
 
   const undoMove = () => {
+    playSound('click');
     if (history.length === 0 || gameState !== 'IDLE') return;
     
     const prevGrid = history[history.length - 1];
@@ -456,6 +459,7 @@ export default function App() {
 
   const provideHint = () => {
     if (gameState !== 'IDLE') return;
+    playSound('click');
     
     // 1. Trace the current path from start to find where it "breaks"
     let currentX = start.x;
@@ -545,6 +549,7 @@ export default function App() {
   const startSequence = () => {
     if (gameState === 'RUNNING') return;
     
+    playSound('start');
     setGameState('RUNNING');
     setIsTimerActive(false); 
     setFailurePoint(null);
@@ -569,6 +574,7 @@ export default function App() {
       }
 
       if (!dir && !currentCell.isStart && !currentCell.isEnd) {
+        playSound('lose');
         setGameState('LOSS');
         setFailurePoint({ x: currentX, y: currentY });
         clearInterval(traversalIntervalRef.current!);
@@ -584,6 +590,7 @@ export default function App() {
 
       // Check bounds
       if (nextX < 0 || nextX >= GRID_SIZE || nextY < 0 || nextY >= GRID_SIZE || grid[nextY][nextX].isObstacle) {
+        playSound('lose');
         setGameState('LOSS');
         setFailurePoint({ x: currentX, y: currentY });
         clearInterval(traversalIntervalRef.current!);
@@ -591,6 +598,7 @@ export default function App() {
       }
 
       // Move packet
+      playSound('step');
       path.push({ x: nextX, y: nextY });
       setVisitedPath([...path]);
       setPacketPos({ x: nextX, y: nextY });
@@ -599,6 +607,7 @@ export default function App() {
 
       // Check win condition
       if (grid[currentY][currentX].isEnd) {
+        playSound('win');
         setGameState('WIN');
         const config = DIFFICULTY_CONFIG[difficulty];
         const minDist = Math.abs(start.x - end.x) + Math.abs(start.y - end.y);
