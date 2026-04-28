@@ -6,9 +6,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Play, 
-  Pause, 
-  SkipForward, 
   RotateCcw, 
   Trash2, 
   Cpu, 
@@ -19,7 +16,6 @@ import {
   ArrowRight,
   Trophy,
   AlertTriangle,
-  Music,
   Save,
   Download
 } from 'lucide-react';
@@ -38,90 +34,10 @@ interface Cell {
   isObstacle: boolean;
 }
 
-interface Track {
-  id: number;
-  title: string;
-  url: string;
-}
-
-const TRACKS: Track[] = [
-  { id: 1, title: 'Synth Flow', url: '#' },
-  { id: 2, title: 'Data Stream', url: '#' },
-  { id: 3, title: 'Logic Gate', url: '#' },
-];
-
 const DIFFICULTY_CONFIG = {
   EASY: { label: 'Easy', density: 0.10, multiplier: 1, minDistance: 4 },
   MEDIUM: { label: 'Medium', density: 0.18, multiplier: 2, minDistance: 6 },
   HARD: { label: 'Hard', density: 0.25, multiplier: 3, minDistance: 7 },
-};
-
-// --- Audio Utility ---
-
-const audioCtx = typeof window !== 'undefined' ? new (window.AudioContext || (window as any).webkitAudioContext)() : null;
-
-const playSound = (type: 'place' | 'run' | 'win' | 'loss' | 'undo') => {
-  if (!audioCtx) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-
-  const now = audioCtx.currentTime;
-
-  switch (type) {
-    case 'place':
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, now);
-      osc.frequency.exponentialRampToValueAtTime(440, now + 0.1);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      osc.start(now);
-      osc.stop(now + 0.1);
-      break;
-    case 'undo':
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(440, now);
-      osc.frequency.exponentialRampToValueAtTime(220, now + 0.1);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      osc.start(now);
-      osc.stop(now + 0.1);
-      break;
-    case 'run':
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(110, now);
-      osc.frequency.linearRampToValueAtTime(220, now + 0.2);
-      gain.gain.setValueAtTime(0.05, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
-      osc.start(now);
-      osc.stop(now + 0.2);
-      break;
-    case 'win':
-      [440, 554, 659, 880].forEach((f, i) => {
-        const o = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
-        o.type = 'sine';
-        o.frequency.value = f;
-        o.connect(g);
-        g.connect(audioCtx.destination);
-        g.gain.setValueAtTime(0.1, now + i * 0.1);
-        g.gain.exponentialRampToValueAtTime(0.01, now + i * 0.1 + 0.3);
-        o.start(now + i * 0.1);
-        o.stop(now + i * 0.1 + 0.3);
-      });
-      break;
-    case 'loss':
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(110, now);
-      osc.frequency.linearRampToValueAtTime(55, now + 0.5);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.linearRampToValueAtTime(0.01, now + 0.5);
-      osc.start(now);
-      osc.stop(now + 0.5);
-      break;
-  }
 };
 
 // --- Utils ---
@@ -275,6 +191,12 @@ export default function App() {
   const [score, setScore] = useState(0);
   const [scoreBreakdown, setScoreBreakdown] = useState({ base: 0, bonus: 0, time: 0, penalty: 0 });
   const [rank, setRank] = useState<string>('');
+  const [inventory, setInventory] = useState<{ [key in 'UP' | 'DOWN' | 'LEFT' | 'RIGHT']: number }>({
+    UP: 2,
+    DOWN: 3,
+    LEFT: 1,
+    RIGHT: 4
+  });
   const [lastPlaced, setLastPlaced] = useState<{ x: number, y: number, time: number } | null>(null);
   const [isCopied, setIsCopied] = useState(false);
   const [isAutoSaving, setIsAutoSaving] = useState(false);
@@ -297,10 +219,11 @@ export default function App() {
       difficulty,
       moveCount,
       score,
-      timer
+      timer,
+      inventory
     };
     localStorage.setItem('neuro_route_save', JSON.stringify(stateToSave));
-  }, [grid, nodes, difficulty, moveCount, score, timer]);
+  }, [grid, nodes, difficulty, moveCount, score, timer, inventory]);
 
   const loadGameState = useCallback(() => {
     const saved = localStorage.getItem('neuro_route_save');
@@ -314,6 +237,7 @@ export default function App() {
           setMoveCount(parsed.moveCount || 0);
           setScore(parsed.score || 0);
           setTimer(parsed.timer || 0);
+          setInventory(parsed.inventory || { UP: 2, DOWN: 3, LEFT: 1, RIGHT: 4 });
           setGameState('IDLE');
           setPacketPos(null);
         }
@@ -323,10 +247,6 @@ export default function App() {
     }
   }, []);
 
-  // Music Player State
-  const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  
   const traversalIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // --- Handlers ---
@@ -336,6 +256,12 @@ export default function App() {
     setDifficulty(newDifficulty);
     setNodes(newNodes);
     setGrid(newGrid);
+    setInventory({
+      UP: 2,
+      DOWN: 3,
+      LEFT: 1,
+      RIGHT: 4
+    });
     setMoveCount(0);
     setUndoCount(0);
     setGameState('IDLE');
@@ -347,12 +273,30 @@ export default function App() {
   };
 
   const handleCellClick = (x: number, y: number) => {
-    if (isRunning || grid[y][x].isObstacle) {
+    if (isRunning || grid[y][x].isObstacle || grid[y][x].isStart || grid[y][x].isEnd) {
       setSelectedCell(null);
       return;
     }
 
-    playSound('place');
+    const directions: Direction[] = ['UP', 'RIGHT', 'DOWN', 'LEFT', null];
+    const currentDir = grid[y][x].direction;
+    let nextIdx = (directions.indexOf(currentDir) + 1) % directions.length;
+    let nextDir = directions[nextIdx];
+
+    // Check inventory if we are trying to place a direction
+    if (nextDir !== null) {
+      // If we don't have enough arrows of this type, keep cycling until we find one we have or hit null
+      while (nextDir !== null && inventory[nextDir] <= 0) {
+        nextIdx = (nextIdx + 1) % directions.length;
+        nextDir = directions[nextIdx];
+      }
+    }
+
+    // Update Inventory
+    const newInventory = { ...inventory };
+    if (currentDir) newInventory[currentDir] += 1;
+    if (nextDir) newInventory[nextDir] -= 1;
+    setInventory(newInventory);
 
     setLastPlaced({ x, y, time: Date.now() });
 
@@ -362,14 +306,6 @@ export default function App() {
     if (!isTimerActive) setIsTimerActive(true);
 
     setSelectedCell({ x, y });
-    const directions: Direction[] = ['UP', 'RIGHT', 'DOWN', 'LEFT', null];
-    const currentDir = grid[y][x].direction;
-    
-    // For start node, we cycle through but it's not clickable in current UI? 
-    // Let's make it clickable if the user wants to change initial vector.
-    // Actually handleCellClick checks for isStart/isEnd in some previous logic, let's allow start node clicks.
-    
-    const nextDir = directions[(directions.indexOf(currentDir) + 1) % directions.length];
 
     const newGrid = [...grid];
     newGrid[y][x] = { ...newGrid[y][x], direction: nextDir };
@@ -383,8 +319,29 @@ export default function App() {
   const undoMove = () => {
     if (history.length === 0 || gameState !== 'IDLE') return;
     
-    playSound('undo');
     const prevGrid = history[history.length - 1];
+    
+    // Find what changed to update inventory
+    let changedCellLoc = { x: -1, y: -1 };
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        if (grid[y][x].direction !== prevGrid[y][x].direction) {
+          changedCellLoc = { x, y };
+          break;
+        }
+      }
+      if (changedCellLoc.x !== -1) break;
+    }
+
+    if (changedCellLoc.x !== -1) {
+      const currentDir = grid[changedCellLoc.y][changedCellLoc.x].direction;
+      const prevDir = prevGrid[changedCellLoc.y][changedCellLoc.x].direction;
+      const newInventory = { ...inventory };
+      if (currentDir) newInventory[currentDir] += 1;
+      if (prevDir) newInventory[prevDir] -= 1;
+      setInventory(newInventory);
+    }
+
     setGrid(prevGrid);
     setHistory(prev => prev.slice(0, -1));
     setUndoCount(prev => prev + 1);
@@ -399,6 +356,12 @@ export default function App() {
 
   const clearGrid = () => {
     setGrid(createEmptyGrid(difficulty, start, end));
+    setInventory({
+      UP: 2,
+      DOWN: 3,
+      LEFT: 1,
+      RIGHT: 4
+    });
     setMoveCount(0);
     setUndoCount(0);
     setGameState('IDLE');
@@ -414,7 +377,6 @@ export default function App() {
   const startSequence = () => {
     if (gameState === 'RUNNING') return;
     
-    playSound('run');
     setGameState('RUNNING');
     setIsTimerActive(false); 
     setFailurePoint(null);
@@ -440,7 +402,6 @@ export default function App() {
 
       if (!dir && !currentCell.isStart && !currentCell.isEnd) {
         setGameState('LOSS');
-        playSound('loss');
         setFailurePoint({ x: currentX, y: currentY });
         clearInterval(traversalIntervalRef.current!);
         return;
@@ -456,7 +417,6 @@ export default function App() {
       // Check bounds
       if (nextX < 0 || nextX >= GRID_SIZE || nextY < 0 || nextY >= GRID_SIZE || grid[nextY][nextX].isObstacle) {
         setGameState('LOSS');
-        playSound('loss');
         setFailurePoint({ x: currentX, y: currentY });
         clearInterval(traversalIntervalRef.current!);
         return;
@@ -472,7 +432,6 @@ export default function App() {
       // Check win condition
       if (grid[currentY][currentX].isEnd) {
         setGameState('WIN');
-        playSound('win');
         const config = DIFFICULTY_CONFIG[difficulty];
         const minDist = Math.abs(start.x - end.x) + Math.abs(start.y - end.y);
         const baseScore = 1500 * config.multiplier;
@@ -515,9 +474,6 @@ export default function App() {
     setFailurePoint(null);
     if (moveCount > 0) setIsTimerActive(true);
   };
-
-  const toggleMusic = () => setIsPlaying(!isPlaying);
-  const nextTrack = () => setCurrentTrackIndex((prev) => (prev + 1) % TRACKS.length);
 
   const copyDiagnostics = () => {
     const text = `
@@ -665,6 +621,25 @@ Uplink Verified // Signal Strength 100%
             </div>
 
             <div className="pt-6 border-t border-white/5 space-y-4">
+              <h3 className="text-[10px] font-bold uppercase text-slate-600 tracking-[0.3em]">Routing Assets</h3>
+              <div className="grid grid-cols-2 gap-3">
+                {(['UP', 'RIGHT', 'DOWN', 'LEFT'] as const).map(dir => (
+                  <div key={dir} className="glass p-3 rounded-xl flex items-center justify-between border-white/5">
+                    <span className="text-xs text-white">
+                      {dir === 'UP' && '↑'}
+                      {dir === 'DOWN' && '↓'}
+                      {dir === 'LEFT' && '←'}
+                      {dir === 'RIGHT' && '→'}
+                    </span>
+                    <span className={`font-mono text-xs ${inventory[dir] === 0 ? 'text-red-500/50' : 'text-cyan-400 font-bold'}`}>
+                      {inventory[dir]}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-6 border-t border-white/5 space-y-4">
               <h3 className="text-[10px] font-bold uppercase text-slate-600 tracking-[0.3em]">Persistent Storage</h3>
               <div className="grid grid-cols-2 gap-3">
                 <button 
@@ -715,60 +690,7 @@ Uplink Verified // Signal Strength 100%
               </button>
             </div>
           </div>
-
-          <div className="pt-6 border-t border-white/5">
-            <h3 className="text-[10px] font-bold uppercase text-slate-600 mb-6 tracking-[0.3em]">Audio Environment</h3>
-            <div className="space-y-3">
-              {TRACKS.map((track, idx) => (
-                <button 
-                  key={track.id}
-                  onClick={() => setCurrentTrackIndex(idx)}
-                  className={`w-full flex items-center gap-4 p-4 rounded-xl transition-all border text-left group ${currentTrackIndex === idx ? 'bg-cyan-500/5 border-cyan-500/20' : 'hover:bg-white/5 border-transparent'}`}
-                >
-                  <div className={`w-1.5 h-1.5 rounded-full transition-all ${currentTrackIndex === idx ? 'bg-cyan-400 shadow-[0_0_8px_#22d3ee]' : 'bg-slate-700 group-hover:bg-slate-500'}`} />
-                  <div className="flex-1">
-                    <div className={`text-xs font-semibold tracking-tight ${currentTrackIndex === idx ? 'text-white' : 'text-slate-400'}`}>{track.title}</div>
-                    <div className={`text-[9px] uppercase font-mono mt-0.5 ${currentTrackIndex === idx ? 'text-cyan-400/60' : 'text-slate-600'}`}>
-                      {currentTrackIndex === idx ? 'Transmitting' : 'Deferred'}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
         </nav>
-
-        {/* Playback Control - Minimalist Bar */}
-        <div className="p-10 border-t border-white/5 bg-black/20">
-          <div className="flex items-center gap-6">
-            <button 
-              onClick={toggleMusic} 
-              className="w-12 h-12 rounded-full border border-white/10 flex items-center justify-center text-white hover:bg-white/5 transition-all active:scale-95 group"
-            >
-              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5 fill-current" />}
-            </button>
-            <div className="flex-1">
-              <p className="text-[9px] font-mono text-slate-500 uppercase tracking-widest mb-1">Now Streaming</p>
-              <div className="flex gap-0.5 h-4 items-end overflow-hidden">
-                {Array.from({ length: 12 }).map((_, i) => (
-                  <motion.div 
-                    key={i}
-                    animate={{ height: isPlaying ? [
-                      `${Math.random() * 80 + 20}%`, 
-                      `${Math.random() * 80 + 20}%`, 
-                      `${Math.random() * 80 + 20}%`
-                    ] : '15%' }}
-                    transition={{ repeat: Infinity, duration: 0.5 + Math.random(), ease: "easeInOut" }}
-                    className="w-1 bg-cyan-500/30 rounded-full"
-                  />
-                ))}
-              </div>
-            </div>
-            <button onClick={nextTrack} className="text-slate-600 hover:text-white transition-colors">
-              <SkipForward className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
       </aside>
 
       {/* Main Content */}
@@ -1012,7 +934,15 @@ Uplink Verified // Signal Strength 100%
                       {packetPos?.x === x && packetPos?.y === y && (
                         <motion.div 
                           layoutId="packet"
-                          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                          initial={{ scale: 0.8, rotate: 0 }}
+                          animate={{ 
+                            scale: [1, 1.1, 0.9, 1],
+                            rotate: [0, 5, -5, 0],
+                            transition: { 
+                              duration: 0.4, 
+                              ease: "easeInOut"
+                            } 
+                          }}
                           className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none"
                         >
                           {/* Packet Glow Flare */}
@@ -1021,9 +951,16 @@ Uplink Verified // Signal Strength 100%
                             transition={{ repeat: Infinity, duration: 1 }}
                             className="absolute w-16 h-16 bg-cyan-400 rounded-full blur-2xl"
                           />
-                          <div className="w-12 h-12 border border-white rounded-lg flex items-center justify-center bg-white shadow-[0_0_40px_#ffffff] relative z-10">
+                          <motion.div 
+                            animate={{ 
+                              scaleY: [1, 1.2, 0.8, 1],
+                              scaleX: [1, 0.8, 1.2, 1]
+                            }}
+                            transition={{ duration: 0.4, ease: "easeInOut" }}
+                            className="w-12 h-12 border border-white rounded-lg flex items-center justify-center bg-white shadow-[0_0_40px_#ffffff] relative z-10"
+                          >
                             <div className="w-5 h-5 bg-cyan-500 rounded-sm animate-pulse" />
-                          </div>
+                          </motion.div>
                         </motion.div>
                       )}
                     </AnimatePresence>
