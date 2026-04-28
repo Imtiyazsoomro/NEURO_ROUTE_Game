@@ -199,6 +199,7 @@ export default function App() {
   });
   const [lastPlaced, setLastPlaced] = useState<{ x: number, y: number, time: number } | null>(null);
   const [isCopied, setIsCopied] = useState(false);
+  const [hintCell, setHintCell] = useState<{ x: number, y: number } | null>(null);
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [hoveredCell, setHoveredCell] = useState<{ x: number, y: number } | null>(null);
   const [selectedCell, setSelectedCell] = useState<{ x: number, y: number } | null>(null);
@@ -270,6 +271,7 @@ export default function App() {
     setFailurePoint(null);
     setTimer(0);
     setIsTimerActive(false);
+    setHintCell(null);
   };
 
   const handleCellClick = (x: number, y: number) => {
@@ -306,6 +308,7 @@ export default function App() {
     if (!isTimerActive) setIsTimerActive(true);
 
     setSelectedCell({ x, y });
+    setHintCell(null);
 
     const newGrid = [...grid];
     newGrid[y][x] = { ...newGrid[y][x], direction: nextDir };
@@ -372,6 +375,46 @@ export default function App() {
     setFailurePoint(null);
     setTimer(0);
     setIsTimerActive(false);
+    setHintCell(null);
+  };
+
+  const provideHint = () => {
+    if (gameState !== 'IDLE') return;
+    
+    // BFS to find shortest path considering obstacles
+    const queue: { x: number, y: number, path: {x: number, y: number}[] }[] = [{ ...start, path: [] }];
+    const visited = new Set<string>();
+    visited.add(`${start.x},${start.y}`);
+
+    while (queue.length > 0) {
+      const { x, y, path } = queue.shift()!;
+      if (x === end.x && y === end.y) {
+        if (path.length > 0) {
+          // Find the first empty cell or cell that needs to be changed in the suggested path
+          setHintCell(path[0]);
+          setTimeout(() => setHintCell(null), 3000);
+        }
+        return;
+      }
+
+      const neighbors = [
+        { x: x + 1, y }, { x: x - 1, y },
+        { x, y: y + 1 }, { x, y: y - 1 }
+      ];
+
+      for (const n of neighbors) {
+        const key = `${n.x},${n.y}`;
+        if (
+          n.x >= 0 && n.x < GRID_SIZE && 
+          n.y >= 0 && n.y < GRID_SIZE && 
+          !grid[n.y][n.x].isObstacle && 
+          !visited.has(key)
+        ) {
+          visited.add(key);
+          queue.push({ ...n, path: [...path, n] });
+        }
+      }
+    }
   };
 
   const startSequence = () => {
@@ -596,9 +639,9 @@ Uplink Verified // Signal Strength 100%
             </div>
 
             <div className="space-y-3">
-              <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500 tracking-[0.2em]">
+              <div className="flex justify-between text-xs font-bold uppercase text-slate-500 tracking-[0.2em]">
                 <span>System Efficiency</span>
-                <span className="text-cyan-400 font-mono">{score.toString().padStart(4, '0')}</span>
+                <span className="text-cyan-400 font-mono text-sm">{score.toString().padStart(4, '0')}</span>
               </div>
               <div className="h-[2px] bg-white/5 rounded-full overflow-hidden">
                 <motion.div 
@@ -608,30 +651,39 @@ Uplink Verified // Signal Strength 100%
                 />
               </div>
             </div>
-            <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500 tracking-[0.2em]">
+            <div className="flex justify-between text-xs font-bold uppercase text-slate-500 tracking-[0.2em]">
               <span>Grid Saturation</span>
-              <span className="text-white font-mono">{moveCount} <span className="opacity-30">/</span> 64</span>
+              <span className="text-white font-mono text-sm">{moveCount} <span className="opacity-30">/</span> 64</span>
             </div>
 
-            <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500 tracking-[0.2em]">
+            <div className="flex justify-between text-xs font-bold uppercase text-slate-500 tracking-[0.2em]">
               <span>Uptime Duration</span>
-              <span className="text-cyan-400 font-mono">
+              <span className="text-cyan-400 font-mono text-sm">
                 {Math.floor(timer / 60)}:{(timer % 60).toString().padStart(2, '0')}
               </span>
             </div>
 
-            <div className="pt-6 border-t border-white/5 space-y-4">
-              <h3 className="text-[10px] font-bold uppercase text-slate-600 tracking-[0.3em]">Routing Assets</h3>
-              <div className="grid grid-cols-2 gap-3">
+            <div className="pt-6 border-t border-white/5 space-y-5">
+              <div className="flex justify-between items-end">
+                <h3 className="text-[11px] font-black uppercase text-slate-500 tracking-[0.4em]">Routing Assets</h3>
+                <button 
+                  onClick={provideHint}
+                  className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 hover:text-white transition-colors flex items-center gap-2 group"
+                >
+                  <Zap className="w-3 h-3 group-hover:animate-pulse" />
+                  Neural Assist
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
                 {(['UP', 'RIGHT', 'DOWN', 'LEFT'] as const).map(dir => (
-                  <div key={dir} className="glass p-3 rounded-xl flex items-center justify-between border-white/5">
-                    <span className="text-xs text-white">
+                  <div key={dir} className={`glass p-4 rounded-xl flex items-center justify-between border-white/5 transition-all ${inventory[dir] === 0 ? 'opacity-40' : 'hover:border-cyan-500/30'}`}>
+                    <span className="text-sm font-bold text-white">
                       {dir === 'UP' && '↑'}
                       {dir === 'DOWN' && '↓'}
                       {dir === 'LEFT' && '←'}
                       {dir === 'RIGHT' && '→'}
                     </span>
-                    <span className={`font-mono text-xs ${inventory[dir] === 0 ? 'text-red-500/50' : 'text-cyan-400 font-bold'}`}>
+                    <span className={`font-mono text-lg ${inventory[dir] === 0 ? 'text-red-400' : 'text-cyan-400 font-black'}`}>
                       {inventory[dir]}
                     </span>
                   </div>
@@ -821,9 +873,19 @@ Uplink Verified // Signal Strength 100%
                       ${cell.isStart ? 'shadow-[inset_0_0_20px_rgba(34,211,238,0.1)]' : ''}
                       ${cell.isEnd ? 'shadow-[inset_0_0_20px_rgba(255,0,255,0.1)]' : ''}
                       ${hoveredCell?.x === x && hoveredCell?.y === y ? 'z-10 ring-1 ring-white/10 bg-white/[0.05]' : ''}
-                      ${selectedCell?.x === x && selectedCell?.y === y ? 'z-20 ring-1 ring-cyan-500/50 bg-cyan-500/5 shadow-[0_0_20px_rgba(6,182,212,0.1)]' : ''}
+                      ${selectedCell?.x === x && selectedCell?.y === y ? 'z-20 ring-2 ring-cyan-400 bg-cyan-400/5 shadow-[0_0_30px_rgba(34,211,238,0.2)]' : ''}
+                      ${hintCell?.x === x && hintCell?.y === y ? 'z-30 ring-2 ring-yellow-400/50 bg-yellow-400/10 shadow-[0_0_20px_rgba(250,204,21,0.3)] animate-pulse' : ''}
                     `}
                   >
+                    {/* Selected Active Border Pulse */}
+                    {selectedCell?.x === x && selectedCell?.y === y && (
+                      <motion.div 
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: [0.1, 0.3, 0.1] }}
+                        transition={{ duration: 2, repeat: Infinity }}
+                        className="absolute inset-0 bg-cyan-400/10 pointer-events-none"
+                      />
+                    )}
                     {/* Failure Highlight */}
                     {failurePoint?.x === x && failurePoint?.y === y && (
                       <motion.div 
