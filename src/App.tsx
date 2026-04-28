@@ -35,9 +35,36 @@ interface Cell {
 }
 
 const DIFFICULTY_CONFIG = {
-  EASY: { label: 'Easy', density: 0.10, multiplier: 1, minDistance: 4 },
-  MEDIUM: { label: 'Medium', density: 0.18, multiplier: 2, minDistance: 6 },
-  HARD: { label: 'Hard', density: 0.25, multiplier: 3, minDistance: 7 },
+  EASY: { 
+    label: 'Easy', 
+    density: 0.10, 
+    multiplier: 1, 
+    minDistance: 4,
+    color: 'cyan',
+    glow: 'rgba(34, 211, 238, 0.15)',
+    accent: '#22d3ee',
+    pulse: '2s'
+  },
+  MEDIUM: { 
+    label: 'Medium', 
+    density: 0.18, 
+    multiplier: 2, 
+    minDistance: 6,
+    color: 'emerald',
+    glow: 'rgba(16, 185, 129, 0.15)',
+    accent: '#10b981',
+    pulse: '1.5s'
+  },
+  HARD: { 
+    label: 'Hard', 
+    density: 0.25, 
+    multiplier: 3, 
+    minDistance: 7,
+    color: 'fuchsia',
+    glow: 'rgba(192, 38, 211, 0.2)',
+    accent: '#c026d3',
+    pulse: '1s'
+  },
 };
 
 // --- Utils ---
@@ -593,10 +620,24 @@ Uplink Verified // Signal Strength 100%
       </div>
 
       {/* Sidebar - Architectural Rail */}
-      <aside className="w-80 glass border-r border-white/5 flex flex-col z-10">
+      <aside 
+        className="w-80 glass border-r flex flex-col z-10 transition-all duration-700"
+        style={{ 
+          borderColor: `${DIFFICULTY_CONFIG[difficulty].accent}22`,
+          backgroundColor: DIFFICULTY_CONFIG[difficulty].glow 
+        }}
+      >
         <div className="p-10 border-b border-white/5">
           <div className="flex items-center gap-3 mb-1">
-            <div className="w-2 h-8 bg-cyan-500 shadow-[0_0_15px_#06b6d4]" />
+            <motion.div 
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: parseFloat(DIFFICULTY_CONFIG[difficulty].pulse), repeat: Infinity }}
+              className="w-2 h-8 transition-all duration-700" 
+              style={{ 
+                backgroundColor: DIFFICULTY_CONFIG[difficulty].accent,
+                boxShadow: `0 0 20px ${DIFFICULTY_CONFIG[difficulty].accent}`
+              }}
+            />
             <h1 className="text-2xl font-black tracking-tighter text-white uppercase font-sans">
               NEURO<span className="text-cyan-400">ROUTE</span>
             </h1>
@@ -628,9 +669,14 @@ Uplink Verified // Signal Strength 100%
                     onClick={() => handleDifficultyChange(level)}
                     className={`py-2 px-1 rounded-lg border text-[9px] font-bold uppercase tracking-widest transition-all ${
                       difficulty === level 
-                        ? 'bg-cyan-500/10 border-cyan-500 text-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.2)]' 
+                        ? 'shadow-[0_0_15px_rgba(255,255,255,0.05)]' 
                         : 'bg-white/5 border-transparent text-slate-500 hover:text-slate-300'
                     }`}
+                    style={difficulty === level ? { 
+                      backgroundColor: `${DIFFICULTY_CONFIG[level].accent}22`,
+                      borderColor: DIFFICULTY_CONFIG[level].accent,
+                      color: DIFFICULTY_CONFIG[level].accent
+                    } : {}}
                   >
                     {DIFFICULTY_CONFIG[level].label}
                   </button>
@@ -641,13 +687,17 @@ Uplink Verified // Signal Strength 100%
             <div className="space-y-3">
               <div className="flex justify-between text-xs font-bold uppercase text-slate-500 tracking-[0.2em]">
                 <span>System Efficiency</span>
-                <span className="text-cyan-400 font-mono text-sm">{score.toString().padStart(4, '0')}</span>
+                <span className="font-mono text-sm" style={{ color: DIFFICULTY_CONFIG[difficulty].accent }}>{score.toString().padStart(4, '0')}</span>
               </div>
               <div className="h-[2px] bg-white/5 rounded-full overflow-hidden">
                 <motion.div 
                   initial={{ width: 0 }}
                   animate={{ width: `${Math.min((moveCount / 15) * 100, 100)}%` }}
-                  className="h-full bg-cyan-500 shadow-[0_0_10px_#06b6d4]"
+                  className="h-full transition-all duration-700"
+                  style={{ 
+                    backgroundColor: DIFFICULTY_CONFIG[difficulty].accent,
+                    boxShadow: `0 0 10px ${DIFFICULTY_CONFIG[difficulty].accent}`
+                  }}
                 />
               </div>
             </div>
@@ -768,10 +818,10 @@ Uplink Verified // Signal Strength 100%
         >
           {/* Architectural HUD Borders */}
           <div className="absolute -inset-10 border border-white/5 pointer-events-none" />
-          <div className="absolute -top-10 -left-10 w-4 h-4 border-t-2 border-l-2 border-cyan-500/50" />
-          <div className="absolute -top-10 -right-10 w-4 h-4 border-t-2 border-r-2 border-cyan-500/50" />
-          <div className="absolute -bottom-10 -left-10 w-4 h-4 border-b-2 border-l-2 border-cyan-500/50" />
-          <div className="absolute -bottom-10 -right-10 w-4 h-4 border-b-2 border-r-2 border-cyan-500/50" />
+          <div className="absolute -top-10 -left-10 w-4 h-4 border-t-2 border-l-2 opacity-50" style={{ borderColor: DIFFICULTY_CONFIG[difficulty].accent }} />
+          <div className="absolute -top-10 -right-10 w-4 h-4 border-t-2 border-r-2 opacity-50" style={{ borderColor: DIFFICULTY_CONFIG[difficulty].accent }} />
+          <div className="absolute -bottom-10 -left-10 w-4 h-4 border-b-2 border-l-2 opacity-50" style={{ borderColor: DIFFICULTY_CONFIG[difficulty].accent }} />
+          <div className="absolute -bottom-10 -right-10 w-4 h-4 border-b-2 border-r-2 opacity-50" style={{ borderColor: DIFFICULTY_CONFIG[difficulty].accent }} />
 
           {/* Win Celebration Particles */}
           <AnimatePresence>
@@ -791,7 +841,8 @@ Uplink Verified // Signal Strength 100%
                   opacity: 0
                 }}
                 transition={{ duration: 2, ease: "easeOut", delay: Math.random() * 0.5 }}
-                className="absolute w-2 h-2 bg-cyan-400 rounded-full blur-[2px] z-30"
+                className="absolute w-2 h-2 rounded-full blur-[2px] z-30"
+                style={{ backgroundColor: DIFFICULTY_CONFIG[difficulty].accent }}
               />
             ))}
           </AnimatePresence>
@@ -1011,7 +1062,8 @@ Uplink Verified // Signal Strength 100%
                           <motion.div 
                             animate={{ scale: [1, 1.5, 1], opacity: [0.3, 0.6, 0.3] }}
                             transition={{ repeat: Infinity, duration: 1 }}
-                            className="absolute w-16 h-16 bg-cyan-400 rounded-full blur-2xl"
+                            className="absolute w-16 h-16 rounded-full blur-2xl"
+                            style={{ backgroundColor: DIFFICULTY_CONFIG[difficulty].accent }}
                           />
                           <motion.div 
                             animate={{ 
@@ -1020,8 +1072,9 @@ Uplink Verified // Signal Strength 100%
                             }}
                             transition={{ duration: 0.4, ease: "easeInOut" }}
                             className="w-12 h-12 border border-white rounded-lg flex items-center justify-center bg-white shadow-[0_0_40px_#ffffff] relative z-10"
+                            style={{ boxShadow: `0 0 40px ${DIFFICULTY_CONFIG[difficulty].accent}` }}
                           >
-                            <div className="w-5 h-5 bg-cyan-500 rounded-sm animate-pulse" />
+                            <div className="w-5 h-5 rounded-sm animate-pulse" style={{ backgroundColor: DIFFICULTY_CONFIG[difficulty].accent }} />
                           </motion.div>
                         </motion.div>
                       )}
