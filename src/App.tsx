@@ -1,0 +1,1243 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  Play, 
+  Pause, 
+  SkipForward, 
+  RotateCcw, 
+  Trash2, 
+  Cpu, 
+  Zap, 
+  ArrowUp, 
+  ArrowDown, 
+  ArrowLeft, 
+  ArrowRight,
+  Trophy,
+  AlertTriangle,
+  Music,
+  Save,
+  Download
+} from 'lucide-react';
+
+// --- Constants & Types ---
+
+const GRID_SIZE = 8;
+
+type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT' | null;
+type Difficulty = 'EASY' | 'MEDIUM' | 'HARD';
+
+interface Cell {
+  direction: Direction;
+  isStart: boolean;
+  isEnd: boolean;
+  isObstacle: boolean;
+}
+
+interface Track {
+  id: number;
+  title: string;
+  url: string;
+}
+
+const TRACKS: Track[] = [
+  { id: 1, title: 'Synth Flow', url: '#' },
+  { id: 2, title: 'Data Stream', url: '#' },
+  { id: 3, title: 'Logic Gate', url: '#' },
+];
+
+const DIFFICULTY_CONFIG = {
+  EASY: { label: 'Easy', density: 0.10, multiplier: 1, minDistance: 4 },
+  MEDIUM: { label: 'Medium', density: 0.18, multiplier: 2, minDistance: 6 },
+  HARD: { label: 'Hard', density: 0.25, multiplier: 3, minDistance: 7 },
+};
+
+// --- Audio Utility ---
+
+const audioCtx = typeof window !== 'undefined' ? new (window.AudioContext || (window as any).webkitAudioContext)() : null;
+
+const playSound = (type: 'place' | 'run' | 'win' | 'loss' | 'undo') => {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+
+  switch (type) {
+    case 'place':
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.exponentialRampToValueAtTime(440, now + 0.1);
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      osc.start(now);
+      osc.stop(now + 0.1);
+      break;
+    case 'undo':
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.exponentialRampToValueAtTime(220, now + 0.1);
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      osc.start(now);
+      osc.stop(now + 0.1);
+      break;
+    case 'run':
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(110, now);
+      osc.frequency.linearRampToValueAtTime(220, now + 0.2);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+      osc.start(now);
+      osc.stop(now + 0.2);
+      break;
+    case 'win':
+      [440, 554, 659, 880].forEach((f, i) => {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.value = f;
+        o.connect(g);
+        g.connect(audioCtx.destination);
+        g.gain.setValueAtTime(0.1, now + i * 0.1);
+        g.gain.exponentialRampToValueAtTime(0.01, now + i * 0.1 + 0.3);
+        o.start(now + i * 0.1);
+        o.stop(now + i * 0.1 + 0.3);
+      });
+      break;
+    case 'loss':
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(110, now);
+      osc.frequency.linearRampToValueAtTime(55, now + 0.5);
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.linearRampToValueAtTime(0.01, now + 0.5);
+      osc.start(now);
+      osc.stop(now + 0.5);
+      break;
+  }
+};
+
+// --- Utils ---
+
+const checkSolvability = (grid: Cell[][], start: { x: number, y: number }, end: { x: number, y: number }) => {
+  const queue: { x: number, y: number }[] = [start];
+  const visited = new Set<string>();
+  visited.add(`${start.x},${start.y}`);
+
+  while (queue.length > 0) {
+    const { x, y } = queue.shift()!;
+    if (x === end.x && y === end.y) return true;
+
+    const neighbors = [
+      { x: x + 1, y }, { x: x - 1, y },
+      { x, y: y + 1 }, { x, y: y - 1 }
+    ];
+
+    for (const n of neighbors) {
+      const key = `${n.x},${n.y}`;
+      if (
+        n.x >= 0 && n.x < GRID_SIZE && 
+        n.y >= 0 && n.y < GRID_SIZE && 
+        !grid[n.y][n.x].isObstacle && 
+        !visited.has(key)
+      ) {
+        visited.add(key);
+        queue.push(n);
+      }
+    }
+  }
+  return false;
+};
+
+const generateSolvableLevel = (difficulty: Difficulty) => {
+  let attempts = 0;
+  while (attempts < 50) {
+    const nodes = generatePositions(difficulty);
+    const grid = createEmptyGrid(difficulty, nodes.start, nodes.end);
+    if (checkSolvability(grid, nodes.start, nodes.end)) {
+      return { nodes, grid };
+    }
+    attempts++;
+  }
+  // Fallback to minimal obstacles if we fail to find a solvable one (rare)
+  const nodes = generatePositions(difficulty);
+  const grid = createEmptyGrid('EASY', nodes.start, nodes.end);
+  return { nodes, grid };
+};
+
+const generatePositions = (difficulty: Difficulty) => {
+  const minDistance = DIFFICULTY_CONFIG[difficulty].minDistance;
+  let start = { x: 0, y: 0 };
+  let end = { x: 7, y: 7 };
+  let dist = 0;
+
+  while (dist < minDistance) {
+    start = { x: Math.floor(Math.random() * 8), y: Math.floor(Math.random() * 8) };
+    end = { x: Math.floor(Math.random() * 8), y: Math.floor(Math.random() * 8) };
+    dist = Math.abs(start.x - end.x) + Math.abs(start.y - end.y);
+  }
+
+  return { start, end };
+};
+
+const createEmptyGrid = (difficulty: Difficulty = 'MEDIUM', start: { x: number, y: number }, end: { x: number, y: number }): Cell[][] => {
+  const grid: Cell[][] = [];
+  const density = DIFFICULTY_CONFIG[difficulty].density;
+
+  for (let y = 0; y < GRID_SIZE; y++) {
+    const row: Cell[] = [];
+    for (let x = 0; x < GRID_SIZE; x++) {
+      const isStart = x === start.x && y === start.y;
+      const isEnd = x === end.x && y === end.y;
+      const isObstacle = !isStart && !isEnd && Math.random() < density;
+
+      row.push({
+        direction: null,
+        isStart,
+        isEnd,
+        isObstacle,
+      });
+    }
+    grid.push(row);
+  }
+  return grid;
+};
+
+const calculatePath = (grid: Cell[][], start: { x: number, y: number }, end: { x: number, y: number }) => {
+  let currentX = start.x;
+  let currentY = start.y;
+  const path: { x: number, y: number }[] = [{ x: currentX, y: currentY }];
+  const visited = new Set<string>();
+  
+  while (true) {
+    const key = `${currentX},${currentY}`;
+    if (visited.has(key)) break; // Loop detected
+    visited.add(key);
+
+    const cell = grid[currentY][currentX];
+    if (cell.isEnd) break;
+
+    // Start node usually defaults to pointing towards the end or a specific direction
+    // For simplicity, we'll assume start node has a direction if the user clicks it or just handle flow
+    // But since start isn't clickable, we need a "default" flow or user must connect to it.
+    // In our case, the start node needs an exit vector. Let's assume start node is UP if at bottom, etc.
+    // Better: let's allow clicking Start to change its exit direction.
+    let dir = cell.direction;
+    if (cell.isStart && !dir) {
+      // Determine initial direction based on where the end node is
+      if (end.x > start.x) dir = 'RIGHT';
+      else if (end.x < start.x) dir = 'LEFT';
+      else if (end.y > start.y) dir = 'DOWN';
+      else dir = 'UP';
+    }
+
+    if (!dir) break;
+
+    let nextX = currentX;
+    let nextY = currentY;
+    switch (dir) {
+      case 'UP': nextY--; break;
+      case 'DOWN': nextY++; break;
+      case 'LEFT': nextX--; break;
+      case 'RIGHT': nextX++; break;
+    }
+
+    if (nextX < 0 || nextX >= GRID_SIZE || nextY < 0 || nextY >= GRID_SIZE || grid[nextY][nextX].isObstacle) break;
+
+    path.push({ x: nextX, y: nextY });
+    currentX = nextX;
+    currentY = nextY;
+    
+    if (currentX === end.x && currentY === end.y) break;
+  }
+  
+  return path;
+};
+
+// --- Components ---
+
+export default function App() {
+  const [difficulty, setDifficulty] = useState<Difficulty>('MEDIUM');
+  const [nodes, setNodes] = useState(() => generatePositions('MEDIUM'));
+  const [grid, setGrid] = useState<Cell[][]>(() => createEmptyGrid('MEDIUM', nodes.start, nodes.end));
+  const [packetPos, setPacketPos] = useState<{ x: number, y: number } | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [gameState, setGameState] = useState<'IDLE' | 'RUNNING' | 'WIN' | 'LOSS'>('IDLE');
+  const [moveCount, setMoveCount] = useState(0);
+  const [undoCount, setUndoCount] = useState(0);
+  const [score, setScore] = useState(0);
+  const [scoreBreakdown, setScoreBreakdown] = useState({ base: 0, bonus: 0, time: 0, penalty: 0 });
+  const [rank, setRank] = useState<string>('');
+  const [lastPlaced, setLastPlaced] = useState<{ x: number, y: number, time: number } | null>(null);
+  const [isCopied, setIsCopied] = useState(false);
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
+  const [hoveredCell, setHoveredCell] = useState<{ x: number, y: number } | null>(null);
+  const [selectedCell, setSelectedCell] = useState<{ x: number, y: number } | null>(null);
+  const [visitedPath, setVisitedPath] = useState<{ x: number, y: number }[]>([]);
+  const [previewPath, setPreviewPath] = useState<{ x: number, y: number }[]>([]);
+  const [history, setHistory] = useState<Cell[][][]>([]);
+  const [failurePoint, setFailurePoint] = useState<{ x: number, y: number } | null>(null);
+  const [timer, setTimer] = useState(0);
+  const [isTimerActive, setIsTimerActive] = useState(false);
+  
+  const { start, end } = nodes || { start: { x: 0, y: 0 }, end: { x: 7, y: 7 } };
+
+  // Save/Load Handlers
+  const saveGameState = useCallback(() => {
+    const stateToSave = {
+      grid,
+      nodes,
+      difficulty,
+      moveCount,
+      score,
+      timer
+    };
+    localStorage.setItem('neuro_route_save', JSON.stringify(stateToSave));
+  }, [grid, nodes, difficulty, moveCount, score, timer]);
+
+  const loadGameState = useCallback(() => {
+    const saved = localStorage.getItem('neuro_route_save');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.nodes && parsed.grid) {
+          setGrid(parsed.grid);
+          setNodes(parsed.nodes);
+          setDifficulty(parsed.difficulty || 'MEDIUM');
+          setMoveCount(parsed.moveCount || 0);
+          setScore(parsed.score || 0);
+          setTimer(parsed.timer || 0);
+          setGameState('IDLE');
+          setPacketPos(null);
+        }
+      } catch (e) {
+        console.error("Failed to parse saved state", e);
+      }
+    }
+  }, []);
+
+  // Music Player State
+  const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  
+  const traversalIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // --- Handlers ---
+
+  const handleDifficultyChange = (newDifficulty: Difficulty) => {
+    const { nodes: newNodes, grid: newGrid } = generateSolvableLevel(newDifficulty);
+    setDifficulty(newDifficulty);
+    setNodes(newNodes);
+    setGrid(newGrid);
+    setMoveCount(0);
+    setUndoCount(0);
+    setGameState('IDLE');
+    setPacketPos(null);
+    setHistory([]);
+    setFailurePoint(null);
+    setTimer(0);
+    setIsTimerActive(false);
+  };
+
+  const handleCellClick = (x: number, y: number) => {
+    if (isRunning || grid[y][x].isObstacle) {
+      setSelectedCell(null);
+      return;
+    }
+
+    playSound('place');
+
+    setLastPlaced({ x, y, time: Date.now() });
+
+    // Save current state to history
+    setHistory(prev => [...prev, grid.map(row => row.map(cell => ({ ...cell })))]);
+
+    if (!isTimerActive) setIsTimerActive(true);
+
+    setSelectedCell({ x, y });
+    const directions: Direction[] = ['UP', 'RIGHT', 'DOWN', 'LEFT', null];
+    const currentDir = grid[y][x].direction;
+    
+    // For start node, we cycle through but it's not clickable in current UI? 
+    // Let's make it clickable if the user wants to change initial vector.
+    // Actually handleCellClick checks for isStart/isEnd in some previous logic, let's allow start node clicks.
+    
+    const nextDir = directions[(directions.indexOf(currentDir) + 1) % directions.length];
+
+    const newGrid = [...grid];
+    newGrid[y][x] = { ...newGrid[y][x], direction: nextDir };
+    setGrid(newGrid);
+
+    // Update move count (only count non-null changes)
+    const currentMoves = newGrid.flat().filter(c => !c.isStart && !c.isEnd && c.direction !== null).length;
+    setMoveCount(currentMoves);
+  };
+
+  const undoMove = () => {
+    if (history.length === 0 || gameState !== 'IDLE') return;
+    
+    playSound('undo');
+    const prevGrid = history[history.length - 1];
+    setGrid(prevGrid);
+    setHistory(prev => prev.slice(0, -1));
+    setUndoCount(prev => prev + 1);
+    
+    const currentMoves = prevGrid.flat().filter(c => !c.isStart && !c.isEnd && c.direction !== null).length;
+    setMoveCount(currentMoves);
+    if (currentMoves === 0) {
+      setIsTimerActive(false);
+      setTimer(0);
+    }
+  };
+
+  const clearGrid = () => {
+    setGrid(createEmptyGrid(difficulty, start, end));
+    setMoveCount(0);
+    setUndoCount(0);
+    setGameState('IDLE');
+    setPacketPos(null);
+    setSelectedCell(null);
+    setVisitedPath([]);
+    setHistory([]);
+    setFailurePoint(null);
+    setTimer(0);
+    setIsTimerActive(false);
+  };
+
+  const startSequence = () => {
+    if (gameState === 'RUNNING') return;
+    
+    playSound('run');
+    setGameState('RUNNING');
+    setIsTimerActive(false); 
+    setFailurePoint(null);
+    setVisitedPath([{ ...start }]);
+    setPacketPos(start);
+    let currentX = start.x;
+    let currentY = start.y;
+    const path: { x: number, y: number }[] = [{ x: currentX, y: currentY }];
+
+    traversalIntervalRef.current = setInterval(() => {
+      const currentCell = grid[currentY][currentX];
+      let nextX = currentX;
+      let nextY = currentY;
+
+      // Use calculated logic (start node has default exit if not specified)
+      let dir = currentCell.direction;
+      if (currentCell.isStart && !dir) {
+        if (end.x > start.x) dir = 'RIGHT';
+        else if (end.x < start.x) dir = 'LEFT';
+        else if (end.y > start.y) dir = 'DOWN';
+        else dir = 'UP';
+      }
+
+      if (!dir && !currentCell.isStart && !currentCell.isEnd) {
+        setGameState('LOSS');
+        playSound('loss');
+        setFailurePoint({ x: currentX, y: currentY });
+        clearInterval(traversalIntervalRef.current!);
+        return;
+      }
+
+      switch (dir) {
+        case 'UP': nextY--; break;
+        case 'DOWN': nextY++; break;
+        case 'LEFT': nextX--; break;
+        case 'RIGHT': nextX++; break;
+      }
+
+      // Check bounds
+      if (nextX < 0 || nextX >= GRID_SIZE || nextY < 0 || nextY >= GRID_SIZE || grid[nextY][nextX].isObstacle) {
+        setGameState('LOSS');
+        playSound('loss');
+        setFailurePoint({ x: currentX, y: currentY });
+        clearInterval(traversalIntervalRef.current!);
+        return;
+      }
+
+      // Move packet
+      path.push({ x: nextX, y: nextY });
+      setVisitedPath([...path]);
+      setPacketPos({ x: nextX, y: nextY });
+      currentX = nextX;
+      currentY = nextY;
+
+      // Check win condition
+      if (grid[currentY][currentX].isEnd) {
+        setGameState('WIN');
+        playSound('win');
+        const config = DIFFICULTY_CONFIG[difficulty];
+        const minDist = Math.abs(start.x - end.x) + Math.abs(start.y - end.y);
+        const baseScore = 1500 * config.multiplier;
+        
+        const efficiency = minDist / Math.max(minDist, moveCount);
+        const efficiencyBonus = Math.floor(1000 * efficiency);
+        
+        const parTime = minDist * 4;
+        const timeBonus = Math.max(0, (parTime - timer) * 15);
+        const undoPenalty = undoCount * 50;
+        
+        const finalScore = Math.floor(Math.max(500, (baseScore + efficiencyBonus + timeBonus) - undoPenalty));
+        
+        setScoreBreakdown({
+          base: baseScore,
+          bonus: efficiencyBonus,
+          time: timeBonus,
+          penalty: undoPenalty
+        });
+        setScore(finalScore);
+
+        // Rank Calculation
+        const maxPossible = baseScore + 1000 + (parTime * 15);
+        const ratio = finalScore / maxPossible;
+        if (ratio > 0.85) setRank('S');
+        else if (ratio > 0.70) setRank('A');
+        else if (ratio > 0.50) setRank('B');
+        else setRank('C');
+        clearInterval(traversalIntervalRef.current!);
+      }
+    }, 400);
+  };
+
+  const resetSequence = () => {
+    if (traversalIntervalRef.current) clearInterval(traversalIntervalRef.current);
+    setPacketPos(null);
+    setGameState('IDLE');
+    setSelectedCell(null);
+    setVisitedPath([]);
+    setFailurePoint(null);
+    if (moveCount > 0) setIsTimerActive(true);
+  };
+
+  const toggleMusic = () => setIsPlaying(!isPlaying);
+  const nextTrack = () => setCurrentTrackIndex((prev) => (prev + 1) % TRACKS.length);
+
+  const copyDiagnostics = () => {
+    const text = `
+NEUROROUTE TRANSMISSION DIAGNOSTICS
+----------------------------------
+Rank: ${rank}
+Status: Optimal
+Final Yield: ${score}
+----------------------------------
+Base Yield: ${scoreBreakdown.base}
+Efficiency Bonus: +${scoreBreakdown.bonus}
+Latency Bonus: +${scoreBreakdown.time}
+Stability Penalty: -${scoreBreakdown.penalty}
+----------------------------------
+Node Count: ${moveCount}
+Latency Check: ${timer}s
+Uplink Verified // Signal Strength 100%
+    `.trim();
+    navigator.clipboard.writeText(text);
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 2000);
+  };
+
+  // Cleanup & Initial Load
+  useEffect(() => {
+    loadGameState();
+    return () => {
+      if (traversalIntervalRef.current) clearInterval(traversalIntervalRef.current);
+    };
+  }, [loadGameState]);
+
+  // Timer & Path Preview Effect
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isTimerActive) {
+      interval = setInterval(() => {
+        setTimer(t => t + 1);
+      }, 1000);
+    }
+    
+    // Update path preview whenever grid or nodes change
+    if (gameState === 'IDLE') {
+      const path = calculatePath(grid, nodes.start, nodes.end);
+      setPreviewPath(path);
+    } else {
+      setPreviewPath([]);
+    }
+
+    return () => clearInterval(interval);
+  }, [isTimerActive, grid, nodes, gameState]);
+
+  // Auto-Save Effect (Every 60 Seconds)
+  useEffect(() => {
+    let autoSaveInterval: NodeJS.Timeout;
+    
+    if (gameState === 'IDLE' && isTimerActive && timer > 0) {
+      autoSaveInterval = setInterval(() => {
+        saveGameState();
+        setIsAutoSaving(true);
+        setTimeout(() => setIsAutoSaving(false), 3000);
+      }, 60000); // 60 seconds
+    }
+
+    return () => clearInterval(autoSaveInterval);
+  }, [gameState, isTimerActive, timer, saveGameState]);
+
+  return (
+    <div className="min-h-screen bg-[#050508] text-slate-400 flex overflow-hidden font-sans selection:bg-cyan-500/30">
+      {/* Refined Background Elements */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-cyan-900/10 rounded-full blur-[160px]" />
+        <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-cyan-900/10 rounded-full blur-[160px]" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full opacity-[0.03] bg-[radial-gradient(#ffffff_1px,transparent_1px)] [background-size:32px_32px]" />
+      </div>
+
+      {/* Sidebar - Architectural Rail */}
+      <aside className="w-80 glass border-r border-white/5 flex flex-col z-10">
+        <div className="p-10 border-b border-white/5">
+          <div className="flex items-center gap-3 mb-1">
+            <div className="w-2 h-8 bg-cyan-500 shadow-[0_0_15px_#06b6d4]" />
+            <h1 className="text-2xl font-black tracking-tighter text-white uppercase font-sans">
+              NEURO<span className="text-cyan-400">ROUTE</span>
+            </h1>
+          </div>
+          <p className="text-[10px] text-slate-500 font-mono uppercase tracking-[0.3em] leading-none ml-5">V.042 // SYSTEM.ACTIVE</p>
+          <AnimatePresence>
+            {isAutoSaving && (
+              <motion.div 
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0 }}
+                className="mt-4 flex items-center gap-2"
+              >
+                <div className="w-1 h-1 bg-cyan-400 rounded-full animate-pulse" />
+                <span className="text-[8px] font-mono text-cyan-400/60 uppercase tracking-widest">Synchronizing_Cache...</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <nav className="flex-1 px-10 py-10 space-y-10 overflow-y-auto">
+          <div className="space-y-6">
+            <div className="space-y-4">
+              <h3 className="text-[10px] font-bold uppercase text-slate-600 tracking-[0.3em] mb-4">Neural Complexity</h3>
+              <div className="grid grid-cols-3 gap-2">
+                {(Object.keys(DIFFICULTY_CONFIG) as Difficulty[]).map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => handleDifficultyChange(level)}
+                    className={`py-2 px-1 rounded-lg border text-[9px] font-bold uppercase tracking-widest transition-all ${
+                      difficulty === level 
+                        ? 'bg-cyan-500/10 border-cyan-500 text-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.2)]' 
+                        : 'bg-white/5 border-transparent text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {DIFFICULTY_CONFIG[level].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500 tracking-[0.2em]">
+                <span>System Efficiency</span>
+                <span className="text-cyan-400 font-mono">{score.toString().padStart(4, '0')}</span>
+              </div>
+              <div className="h-[2px] bg-white/5 rounded-full overflow-hidden">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min((moveCount / 15) * 100, 100)}%` }}
+                  className="h-full bg-cyan-500 shadow-[0_0_10px_#06b6d4]"
+                />
+              </div>
+            </div>
+            <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500 tracking-[0.2em]">
+              <span>Grid Saturation</span>
+              <span className="text-white font-mono">{moveCount} <span className="opacity-30">/</span> 64</span>
+            </div>
+
+            <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500 tracking-[0.2em]">
+              <span>Uptime Duration</span>
+              <span className="text-cyan-400 font-mono">
+                {Math.floor(timer / 60)}:{(timer % 60).toString().padStart(2, '0')}
+              </span>
+            </div>
+
+            <div className="pt-6 border-t border-white/5 space-y-4">
+              <h3 className="text-[10px] font-bold uppercase text-slate-600 tracking-[0.3em]">Persistent Storage</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <button 
+                  onClick={saveGameState}
+                  className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-white/5 hover:bg-cyan-500/10 border border-white/5 hover:border-cyan-500/30 transition-all group"
+                >
+                  <Save className="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-slate-500 group-hover:text-cyan-400">Save</span>
+                </button>
+                <button 
+                  onClick={loadGameState}
+                  className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-white/5 hover:bg-cyan-500/10 border border-white/5 hover:border-cyan-500/30 transition-all group"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-slate-500 group-hover:text-cyan-400">Load</span>
+                </button>
+              </div>
+            </div>
+            
+            <div className="pt-6 border-t border-white/5 space-y-4">
+              <h3 className="text-[10px] font-bold uppercase text-slate-600 tracking-[0.3em]">Neural Maintenance</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <button 
+                  onClick={undoMove}
+                  disabled={history.length === 0 || gameState !== 'IDLE'}
+                  className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-white/5 hover:bg-yellow-500/10 border border-white/5 hover:border-yellow-500/30 transition-all group disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-slate-500 group-hover:text-yellow-400 transition-transform group-active:-rotate-90" />
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-slate-500 group-hover:text-yellow-400">Undo</span>
+                </button>
+                <button 
+                  onClick={clearGrid}
+                  className="glass py-3 px-4 rounded-xl flex items-center justify-center gap-2 hover:bg-red-500/5 transition-colors border-white/5 group"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-red-400" />
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-slate-600 group-hover:text-red-400">Purge</span>
+                </button>
+              </div>
+            </div>
+            
+            <div className="pt-4">
+              <button 
+                onClick={resetSequence}
+                className="w-full glass p-4 rounded-xl flex items-center justify-center gap-3 hover:bg-white/5 transition-colors border-white/5 group"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-600 group-hover:text-white" />
+                <span className="text-[9px] font-bold uppercase tracking-widest text-slate-600 group-hover:text-white">Reset Simulation</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="pt-6 border-t border-white/5">
+            <h3 className="text-[10px] font-bold uppercase text-slate-600 mb-6 tracking-[0.3em]">Audio Environment</h3>
+            <div className="space-y-3">
+              {TRACKS.map((track, idx) => (
+                <button 
+                  key={track.id}
+                  onClick={() => setCurrentTrackIndex(idx)}
+                  className={`w-full flex items-center gap-4 p-4 rounded-xl transition-all border text-left group ${currentTrackIndex === idx ? 'bg-cyan-500/5 border-cyan-500/20' : 'hover:bg-white/5 border-transparent'}`}
+                >
+                  <div className={`w-1.5 h-1.5 rounded-full transition-all ${currentTrackIndex === idx ? 'bg-cyan-400 shadow-[0_0_8px_#22d3ee]' : 'bg-slate-700 group-hover:bg-slate-500'}`} />
+                  <div className="flex-1">
+                    <div className={`text-xs font-semibold tracking-tight ${currentTrackIndex === idx ? 'text-white' : 'text-slate-400'}`}>{track.title}</div>
+                    <div className={`text-[9px] uppercase font-mono mt-0.5 ${currentTrackIndex === idx ? 'text-cyan-400/60' : 'text-slate-600'}`}>
+                      {currentTrackIndex === idx ? 'Transmitting' : 'Deferred'}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </nav>
+
+        {/* Playback Control - Minimalist Bar */}
+        <div className="p-10 border-t border-white/5 bg-black/20">
+          <div className="flex items-center gap-6">
+            <button 
+              onClick={toggleMusic} 
+              className="w-12 h-12 rounded-full border border-white/10 flex items-center justify-center text-white hover:bg-white/5 transition-all active:scale-95 group"
+            >
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5 fill-current" />}
+            </button>
+            <div className="flex-1">
+              <p className="text-[9px] font-mono text-slate-500 uppercase tracking-widest mb-1">Now Streaming</p>
+              <div className="flex gap-0.5 h-4 items-end overflow-hidden">
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <motion.div 
+                    key={i}
+                    animate={{ height: isPlaying ? [
+                      `${Math.random() * 80 + 20}%`, 
+                      `${Math.random() * 80 + 20}%`, 
+                      `${Math.random() * 80 + 20}%`
+                    ] : '15%' }}
+                    transition={{ repeat: Infinity, duration: 0.5 + Math.random(), ease: "easeInOut" }}
+                    className="w-1 bg-cyan-500/30 rounded-full"
+                  />
+                ))}
+              </div>
+            </div>
+            <button onClick={nextTrack} className="text-slate-600 hover:text-white transition-colors">
+              <SkipForward className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 flex flex-col items-center justify-center p-12 z-10 relative">
+        <AnimatePresence>
+          {gameState === 'LOSS' && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: [0, 0.2, 0] }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.4, times: [0, 0.5, 1] }}
+              className="fixed inset-0 bg-red-600/20 pointer-events-none z-50 mix-blend-overlay"
+            />
+          )}
+        </AnimatePresence>
+
+        <motion.div 
+          animate={gameState === 'LOSS' ? {
+            x: [0, -10, 10, -10, 10, 0],
+            transition: { duration: 0.4 }
+          } : {}}
+          className="relative"
+        >
+          {/* Architectural HUD Borders */}
+          <div className="absolute -inset-10 border border-white/5 pointer-events-none" />
+          <div className="absolute -top-10 -left-10 w-4 h-4 border-t-2 border-l-2 border-cyan-500/50" />
+          <div className="absolute -top-10 -right-10 w-4 h-4 border-t-2 border-r-2 border-cyan-500/50" />
+          <div className="absolute -bottom-10 -left-10 w-4 h-4 border-b-2 border-l-2 border-cyan-500/50" />
+          <div className="absolute -bottom-10 -right-10 w-4 h-4 border-b-2 border-r-2 border-cyan-500/50" />
+
+          {/* Win Celebration Particles */}
+          <AnimatePresence>
+            {gameState === 'WIN' && Array.from({ length: 20 }).map((_, i) => (
+              <motion.div
+                key={i}
+                initial={{ 
+                  x: (end.x - GRID_SIZE/2) * 64, 
+                  y: (end.y - GRID_SIZE/2) * 64,
+                  scale: 0,
+                  opacity: 1
+                }}
+                animate={{ 
+                  x: (end.x - GRID_SIZE/2) * 64 + (Math.random() - 0.5) * 400,
+                  y: (end.y - GRID_SIZE/2) * 64 + (Math.random() - 0.5) * 400,
+                  scale: [0, 1.5, 0],
+                  opacity: 0
+                }}
+                transition={{ duration: 2, ease: "easeOut", delay: Math.random() * 0.5 }}
+                className="absolute w-2 h-2 bg-cyan-400 rounded-full blur-[2px] z-30"
+              />
+            ))}
+          </AnimatePresence>
+
+          {/* Grid Container */}
+          <div 
+            className="glass p-1 rounded-[1.5rem] relative overflow-hidden bg-white/[0.02]"
+            onClick={() => setSelectedCell(null)}
+          >
+            {/* Dynamic Path Connector SVG */}
+            <svg 
+              className="absolute inset-0 z-10 pointer-events-none p-1"
+              style={{ width: '100%', height: '100%' }}
+            >
+              {/* Actual Visited Path - Enhanced Glow */}
+              {visitedPath.length > 1 && (
+                <>
+                  {/* Outer Glow */}
+                  <motion.path
+                    d={visitedPath.map((p, i) => 
+                      `${i === 0 ? 'M' : 'L'} ${p.x * 64 + 32} ${p.y * 64 + 32}`
+                    ).join(' ')}
+                    fill="none"
+                    stroke="#06b6d4"
+                    strokeWidth="6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    initial={{ pathLength: 0, opacity: 0 }}
+                    animate={{ pathLength: 1, opacity: 0.2 }}
+                    className="blur-md"
+                  />
+                  {/* Core Line */}
+                  <motion.path
+                    d={visitedPath.map((p, i) => 
+                      `${i === 0 ? 'M' : 'L'} ${p.x * 64 + 32} ${p.y * 64 + 32}`
+                    ).join(' ')}
+                    fill="none"
+                    stroke="#06b6d4"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    initial={{ pathLength: 0, opacity: 0 }}
+                    animate={{ pathLength: 1, opacity: 0.8 }}
+                    className="drop-shadow-[0_0_12px_#06b6d4]"
+                  />
+                </>
+              )}
+              {/* Path Preview */}
+              {previewPath.length > 1 && gameState === 'IDLE' && (
+                <motion.path
+                  d={previewPath.map((p, i) => 
+                    `${i === 0 ? 'M' : 'L'} ${p.x * 64 + 32} ${p.y * 64 + 32}`
+                  ).join(' ')}
+                  fill="none"
+                  stroke="#06b6d4"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                  strokeLinecap="round"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 0.3 }}
+                />
+              )}
+            </svg>
+
+            <div className="grid grid-cols-8 gap-[1px] bg-white/10 p-[1px] rounded-[1.2rem] overflow-hidden">
+              {grid.map((row, y) => 
+                row.map((cell, x) => (
+                  <button
+                    key={`${x}-${y}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCellClick(x, y);
+                    }}
+                    onMouseEnter={() => setHoveredCell({ x, y })}
+                    onMouseLeave={() => setHoveredCell(null)}
+                    className={`
+                      w-[64px] h-[64px] bg-[#08080c] flex items-center justify-center transition-all duration-300 relative
+                      hover:bg-white/[0.07] active:bg-white/[0.1]
+                      ${cell.isStart ? 'shadow-[inset_0_0_20px_rgba(34,211,238,0.1)]' : ''}
+                      ${cell.isEnd ? 'shadow-[inset_0_0_20px_rgba(255,0,255,0.1)]' : ''}
+                      ${hoveredCell?.x === x && hoveredCell?.y === y ? 'z-10 ring-1 ring-white/10 bg-white/[0.05]' : ''}
+                      ${selectedCell?.x === x && selectedCell?.y === y ? 'z-20 ring-1 ring-cyan-500/50 bg-cyan-500/5 shadow-[0_0_20px_rgba(6,182,212,0.1)]' : ''}
+                    `}
+                  >
+                    {/* Failure Highlight */}
+                    {failurePoint?.x === x && failurePoint?.y === y && (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.5 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="absolute inset-0 z-10 bg-red-500/10 border-2 border-red-500/50 flex items-center justify-center"
+                      >
+                        <AlertTriangle className="w-8 h-8 text-red-500 animate-pulse" />
+                      </motion.div>
+                    )}
+
+                    {/* Celebration Pulse Overlay */}
+                    {gameState === 'WIN' && (
+                      <motion.div 
+                        key={`pulse-${x}-${y}`}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ 
+                          opacity: [0, 1, 0],
+                          scale: [0.8, 1.2, 1],
+                        }}
+                        transition={{ 
+                          duration: 1, 
+                          delay: (Math.abs(x - end.x) + Math.abs(y - end.y)) * 0.1,
+                          repeat: Infinity,
+                          repeatDelay: 2
+                        }}
+                        className="absolute inset-0 bg-cyan-500/20 pointer-events-none blur-sm"
+                      />
+                    )}
+                    
+                    {/* Tooltip */}
+                    <AnimatePresence>
+                      {hoveredCell?.x === x && hoveredCell?.y === y && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 5, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
+                        >
+                          <div className="bg-slate-900/90 backdrop-blur-xl px-3 py-2 rounded-lg border border-white/10 whitespace-nowrap shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
+                            <p className="text-[8px] font-mono font-bold text-cyan-400 uppercase tracking-[0.2em] mb-1 leading-none">
+                              {cell.isStart ? 'Uplink Node' : cell.isEnd ? 'Downlink Target' : cell.isObstacle ? 'Signal Jammer' : 'Flow Buffer'}
+                            </p>
+                            <p className="text-[10px] text-slate-400 font-medium tracking-tight leading-none">
+                              {cell.isStart ? 'Sequence initiation point' : 
+                               cell.isEnd ? 'Data packet terminal' : 
+                               cell.isObstacle ? 'Non-traversable sector' : 
+                               'Click to configure vector'}
+                            </p>
+                            {/* Little arrow for tooltip */}
+                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-x-4 border-x-transparent border-t-4 border-t-slate-900/90" />
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {cell.isStart && (
+                      <div className="w-10 h-10 rounded-full border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-mono text-sm tracking-tighter bg-cyan-900/10">
+                        IN
+                      </div>
+                    )}
+                    {cell.isEnd && (
+                      <div className="w-10 h-10 rounded-full border border-magenta-500/30 flex items-center justify-center text-magenta-400 font-mono text-sm tracking-tighter bg-magenta-900/10" style={{ color: '#ff00ff', borderColor: 'rgba(255,0,255,0.3)' }}>
+                        OUT
+                      </div>
+                    )}
+                    {cell.isObstacle && (
+                      <div className="w-10 h-10 bg-slate-900 border border-slate-700/50 rounded-sm flex items-center justify-center relative overflow-hidden group/obs obstacle-glow shadow-[0_0_15px_rgba(239,68,68,0.1)]">
+                        <div className="absolute inset-0 bg-red-600/10 group-hover/obs:bg-red-600/20 transition-colors animate-pulse" />
+                        <div className="absolute inset-0 flex items-center justify-center opacity-30 group-hover/obs:opacity-50 transition-opacity">
+                           <div className="w-full h-[1px] bg-red-500 rotate-45 absolute" />
+                           <div className="w-full h-[1px] bg-red-500 -rotate-45 absolute" />
+                        </div>
+                        <AlertTriangle className="w-4 h-4 text-red-900/50 group-hover/obs:text-red-500 transition-colors z-10" />
+                      </div>
+                    )}
+                    
+                    {cell.direction && (
+                      <>
+                        <AnimatePresence>
+                          {lastPlaced?.x === x && lastPlaced?.y === y && (
+                            <motion.div
+                              key={`ping-${lastPlaced.time}`}
+                              initial={{ scale: 0.5, opacity: 0.8 }}
+                              animate={{ scale: 2.5, opacity: 0 }}
+                              exit={{ opacity: 0 }}
+                              transition={{ duration: 0.6, ease: "easeOut" }}
+                              className="absolute inset-0 rounded-xl border-2 border-cyan-400 z-30 pointer-events-none"
+                            />
+                          )}
+                        </AnimatePresence>
+                        <motion.span 
+                          key={`${cell.direction}-${moveCount}`}
+                          initial={{ scale: 1.5, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 0.8 }}
+                          className="text-cyan-400 font-mono text-2xl leading-none"
+                        >
+                          {cell.direction === 'UP' && '↑'}
+                          {cell.direction === 'DOWN' && '↓'}
+                          {cell.direction === 'LEFT' && '←'}
+                          {cell.direction === 'RIGHT' && '→'}
+                        </motion.span>
+                      </>
+                    )}
+                    
+                    {/* Data Packet Overlay */}
+                    <AnimatePresence>
+                      {packetPos?.x === x && packetPos?.y === y && (
+                        <motion.div 
+                          layoutId="packet"
+                          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                          className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none"
+                        >
+                          {/* Packet Glow Flare */}
+                          <motion.div 
+                            animate={{ scale: [1, 1.5, 1], opacity: [0.3, 0.6, 0.3] }}
+                            transition={{ repeat: Infinity, duration: 1 }}
+                            className="absolute w-16 h-16 bg-cyan-400 rounded-full blur-2xl"
+                          />
+                          <div className="w-12 h-12 border border-white rounded-lg flex items-center justify-center bg-white shadow-[0_0_40px_#ffffff] relative z-10">
+                            <div className="w-5 h-5 bg-cyan-500 rounded-sm animate-pulse" />
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </motion.div>
+
+        {/* HUD Controls */}
+        <div className="mt-20 w-full max-w-lg">
+          <div className="flex items-end justify-between gap-12">
+            <div className="flex-1 space-y-4">
+              <div className="flex gap-2">
+                {['↑', '↓', '←', '→'].map((arrow) => (
+                  <div key={arrow} className="w-10 h-10 glass rounded-lg flex items-center justify-center text-[10px] font-mono text-slate-600 border-white/5">
+                    {arrow}
+                  </div>
+                ))}
+              </div>
+              <div className="text-[10px] font-mono text-slate-600 uppercase tracking-[0.2em]">
+                Static Module Integration // Ready
+              </div>
+            </div>
+
+            <AnimatePresence mode="wait">
+              {gameState === 'IDLE' ? (
+                <motion.button
+                  key="run-idx"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  onClick={startSequence}
+                  className="px-10 py-5 bg-cyan-500 text-black font-black uppercase tracking-[0.3em] text-[11px] transition-all hover:bg-cyan-400 hover:scale-105 active:scale-95 shadow-[0_0_30px_rgba(6,182,212,0.3)]"
+                >
+                  Initiate Sequence
+                </motion.button>
+              ) : (
+                <motion.button
+                  key="reset-idx"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  onClick={resetSequence}
+                  className={`px-10 py-5 border font-black uppercase tracking-[0.3em] text-[11px] transition-all active:scale-95 ${gameState === 'LOSS' ? 'border-red-500 text-red-500 bg-red-500/10' : 'border-cyan-500/50 text-cyan-400 bg-cyan-500/5'}`}
+                >
+                  {gameState === 'RUNNING' ? 'Interrupt' : 'Reroute Cycle'}
+                </motion.button>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+        {/* Final Status */}
+        <div className="absolute bottom-12 right-12 text-right">
+          <AnimatePresence>
+            {gameState === 'WIN' && (
+              <motion.div 
+                initial={{ opacity: 0, x: 20 }} 
+                animate={{ opacity: 1, x: 0 }} 
+                className="flex flex-col items-end gap-3"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-1 h-8 bg-cyan-500 shadow-[0_0_15px_#06b6d4]" />
+                  <div>
+                    <p className="text-cyan-400 font-mono text-2xl font-black uppercase tracking-[0.4em] leading-none">
+                      Success
+                    </p>
+                    <p className="text-cyan-500/60 font-mono text-[10px] uppercase tracking-[0.2em] mt-1">
+                      Final Transmission Optimal
+                    </p>
+                  </div>
+                </div>
+
+                <div className="glass p-6 rounded-2xl border-white/10 space-y-3 min-w-[280px] relative overflow-hidden group/result">
+                  {/* Scanning Line Animation */}
+                  <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                    <motion.div 
+                      animate={{ top: ['-10%', '110%'] }}
+                      transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+                      className="absolute left-0 right-0 h-[2px] bg-cyan-500/20 shadow-[0_0_15px_#06b6d4]"
+                    />
+                  </div>
+
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h4 className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Neural Performance</h4>
+                      <p className="text-[9px] text-cyan-500/40 uppercase font-mono mt-0.5 tracking-tight">Diagnostics: Stable</p>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-[8px] text-slate-600 uppercase font-bold">Rank</span>
+                      <motion.span 
+                        initial={{ scale: 2, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        className={`text-3xl font-black font-mono leading-none ${
+                          rank === 'S' ? 'text-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.3)]' :
+                          rank === 'A' ? 'text-cyan-400' :
+                          rank === 'B' ? 'text-cyan-400' : 'text-slate-400'
+                        }`}
+                      >
+                        {rank}
+                      </motion.span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <div className="flex justify-between items-center text-[10px] uppercase font-bold tracking-[0.2em]">
+                      <span className="text-slate-500">Node Efficiency</span>
+                      <span className="text-cyan-400 font-mono">+{scoreBreakdown.bonus}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px] uppercase font-bold tracking-[0.2em]">
+                      <span className="text-slate-500">Latency Bonus</span>
+                      <span className="text-cyan-400 font-mono">+{scoreBreakdown.time}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px] uppercase font-bold tracking-[0.2em]">
+                      <span className="text-slate-500">Stability Re-pings</span>
+                      <span className="text-red-500/60 font-mono">-{scoreBreakdown.penalty}</span>
+                    </div>
+                    <div className="h-[1px] bg-white/5 my-3" />
+                    <div className="flex justify-between items-end">
+                      <span className="text-[11px] uppercase font-black tracking-[0.3em] text-cyan-400 mb-1">Yield Score</span>
+                      <motion.div className="flex flex-col items-end">
+                        <motion.span 
+                          initial={{ y: 10, opacity: 0 }}
+                          animate={{ y: 0, opacity: 1 }}
+                          className="text-3xl font-mono text-white font-black leading-none"
+                        >
+                          {score.toString().padStart(4, '0')}
+                        </motion.span>
+                        <span className="text-[8px] text-cyan-500/40 uppercase font-mono mt-1 tracking-widest">Base_Yield_{DIFFICULTY_CONFIG[difficulty].multiplier}X</span>
+                      </motion.div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 w-full">
+                  <button 
+                    onClick={copyDiagnostics}
+                    className="flex-1 glass py-3 rounded-xl text-[9px] font-black uppercase tracking-[0.3em] text-cyan-400 hover:bg-cyan-500/10 transition-all flex items-center justify-center gap-2"
+                  >
+                    <AnimatePresence mode="wait">
+                      {isCopied ? (
+                        <motion.span 
+                          key="copied"
+                          initial={{ opacity: 0, y: 5 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="text-white"
+                        >
+                          Diagnostics Copied
+                        </motion.span>
+                      ) : (
+                        <motion.div 
+                          key="copy"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          className="flex items-center gap-2"
+                        >
+                          <Zap className="w-3 h-3" />
+                          Share Diagnostics
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </button>
+                  <button 
+                    onClick={handleDifficultyChange.bind(null, difficulty)}
+                    className="flex-1 glass py-3 rounded-xl text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 hover:text-cyan-400 transition-all flex items-center justify-center gap-2 group"
+                  >
+                    <RotateCcw className="w-3 h-3 group-hover:rotate-180 transition-transform duration-500" />
+                    New Vector
+                  </button>
+                </div>
+              </motion.div>
+            )}
+            {gameState === 'LOSS' && (
+              <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="flex flex-col items-end gap-2">
+                <div className="flex items-center gap-3 text-red-500">
+                   <div className="w-1 h-6 bg-red-500 shadow-[0_0_15px_#ef4444]" />
+                   <p className="font-mono text-xl font-black uppercase tracking-[0.4em]">Failure</p>
+                </div>
+                <p className="text-red-500/60 font-mono text-[10px] uppercase tracking-[0.2em]">
+                   Protocol Error // Connection Reset
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </main>
+
+      <style>{`
+        .glass { 
+          background: rgba(255, 255, 255, 0.02); 
+          backdrop-filter: blur(24px); 
+          border: 1px solid rgba(255, 255, 255, 0.05); 
+        }
+        .node-pulse { 
+          animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; 
+        }
+        .obstacle-glow {
+          box-shadow: 0 0 10px rgba(239, 68, 68, 0.1);
+          animation: danger-pulse 3s ease-in-out infinite;
+        }
+        @keyframes danger-pulse {
+          0%, 100% { box-shadow: 0 0 10px rgba(239, 68, 68, 0.1); border-color: rgba(239,68,68,0.2); }
+          50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.2); border-color: rgba(239,68,68,0.4); }
+        }
+        @keyframes pulse { 
+          0%, 100% { opacity: 1; transform: scale(1); } 
+          50% { opacity: 0.5; transform: scale(1.05); } 
+        }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(6, 182, 212, 0.1); border-radius: 4px; }
+      `}</style>
+    </div>
+  );
+}
